@@ -122,8 +122,8 @@ pub fn element_node<'a>(input: Input<'a>) -> IResult<Input<'a>, GreenElement, ()
             .map(with_keywords)
             .or_else(|_| list_node(input)),
         Some(b'#') => block_node(input)
+            .or_else(|_| dyn_block_node(i).map(with_keywords))
             .or_else(|_| keyword_node(input))
-            .or_else(|_| dyn_block_node(input))
             .or_else(|_| comment_node(input)),
         Some(b'\\') => latex_environment_node(i).map(with_keywords),
         _ => Err(nom::Err::Error(())),
