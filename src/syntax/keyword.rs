@@ -3,7 +3,7 @@ use nom::Parser;
 
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_till, take_while1},
+    bytes::complete::{tag, tag_no_case, take_till, take_while1},
     character::complete::space0,
     combinator::{recognize, verify},
     IResult, Input as _,
@@ -27,7 +27,7 @@ pub fn keyword_node(input: Input) -> IResult<Input, GreenElement, ()> {
         Ok((
             input,
             node(
-                if key == "CALL" {
+                if key.eq_ignore_ascii_case("CALL") {
                     SyntaxKind::BABEL_CALL
                 } else {
                     SyntaxKind::KEYWORD
@@ -61,7 +61,16 @@ pub fn affiliated_keyword_nodes(input: Input) -> IResult<Input, Vec<GreenElement
             return Ok((input, vec![]));
         }
 
-        if input_.c.affiliated_keywords.iter().all(|w| w != key) && !key.starts_with("ATTR_") {
+        // keywords are case-insensitive
+        if input_
+            .c
+            .affiliated_keywords
+            .iter()
+            .all(|w| !w.eq_ignore_ascii_case(key))
+            && !key
+                .get(..5)
+                .is_some_and(|p| p.eq_ignore_ascii_case("ATTR_"))
+        {
             break;
         }
 
@@ -141,7 +150,7 @@ fn key_with_optional(
     input: Input,
 ) -> IResult<Input, (Input, Option<(Input, Input, Input)>, Input), ()> {
     let (input, (key, r_backer, optional, l_backer, colon)) = (
-        alt((tag("CAPTION"), tag("RESULTS"))),
+        alt((tag_no_case("CAPTION"), tag_no_case("RESULTS"))),
         tag("["),
         take_till(|c| c == '\r' || c == '\n' || c == ']'),
         tag("]"),
@@ -289,4 +298,59 @@ fn parse() {
 
     assert!(keyword_node(("#+KE Y: VALUE", config).into()).is_err());
     assert!(keyword_node(("#+ KEY: VALUE", config).into()).is_err());
+}
+
+#[test]
+fn lowercase_affiliated_keywords() {
+    use crate::ast::SourceBlock;
+    use crate::syntax::block::block_node;
+    use crate::tests::to_ast;
+
+    let to_src_block = to_ast::<SourceBlock>(block_node);
+
+    let block = to_src_block(
+        "#+name: s\n#+caption[short]: c\n#+attr_html: :width 1\n#+begin_src sh\nls\n#+end_src\n",
+    );
+    assert_eq!(block.name().unwrap().value().unwrap(), " s");
+    assert_eq!(block.caption().unwrap().optional().unwrap(), "short");
+    assert!(block.attr("html").is_some());
+    insta::assert_debug_snapshot!(
+        block.syntax,
+        @r##"
+    SOURCE_BLOCK@0..80
+      AFFILIATED_KEYWORD@0..10
+        HASH_PLUS@0..2 "#+"
+        TEXT@2..6 "name"
+        COLON@6..7 ":"
+        TEXT@7..9 " s"
+        NEW_LINE@9..10 "\n"
+      AFFILIATED_KEYWORD@10..30
+        HASH_PLUS@10..12 "#+"
+        TEXT@12..19 "caption"
+        L_BRACKET@19..20 "["
+        TEXT@20..25 "short"
+        R_BRACKET@25..26 "]"
+        COLON@26..27 ":"
+        TEXT@27..29 " c"
+        NEW_LINE@29..30 "\n"
+      AFFILIATED_KEYWORD@30..52
+        HASH_PLUS@30..32 "#+"
+        TEXT@32..41 "attr_html"
+        COLON@41..42 ":"
+        TEXT@42..51 " :width 1"
+        NEW_LINE@51..52 "\n"
+      BLOCK_BEGIN@52..67
+        TEXT@52..60 "#+begin_"
+        TEXT@60..63 "src"
+        WHITESPACE@63..64 " "
+        SRC_BLOCK_LANGUAGE@64..66 "sh"
+        NEW_LINE@66..67 "\n"
+      BLOCK_CONTENT@67..70
+        TEXT@67..70 "ls\n"
+      BLOCK_END@70..80
+        TEXT@70..76 "#+end_"
+        TEXT@76..79 "src"
+        NEW_LINE@79..80 "\n"
+    "##
+    );
 }
