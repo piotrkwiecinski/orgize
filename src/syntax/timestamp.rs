@@ -10,8 +10,8 @@ use nom::{
 use super::{
     combinator::{
         colon_token, l_angle_token, l_bracket_token, l_parens_token, minus2_token, minus_token,
-        node, percent2_token, r_angle_token, r_bracket_token, r_parens_token, GreenElement,
-        NodeBuilder,
+        node, percent2_token, r_angle_token, r_bracket_token, r_parens_token, slash_token,
+        GreenElement, NodeBuilder,
     },
     input::Input,
     SyntaxKind::*,
@@ -104,9 +104,20 @@ fn time(i: Input) -> IResult<Input, [GreenElement; 3], ()> {
     .parse(i)
 }
 
-fn repeater_or_delay(
-    input: Input,
-) -> IResult<Input, (GreenElement, GreenElement, GreenElement), ()> {
+fn value_and_unit(input: Input) -> IResult<Input, [GreenElement; 2], ()> {
+    let (input, value) = digit1(input)?;
+    let (input, unit) = alt((tag("h"), tag("d"), tag("w"), tag("m"), tag("y"))).parse(input)?;
+    Ok((
+        input,
+        [value.token(TIMESTAMP_VALUE), unit.token(TIMESTAMP_UNIT)],
+    ))
+}
+
+/// Recognizes a repeater (`+1w`, `++1d`, `.+2d/4d`) or a delay (`-1d`, `--2d`)
+///
+/// A repeater may carry a habit deadline (`/4d`) after its interval.
+fn repeater_or_delay(input: Input) -> IResult<Input, Vec<GreenElement>, ()> {
+    let is_repeater = !input.as_str().starts_with('-');
     let (input, mark) = alt((
         map(alt((tag("++"), tag("+"), tag(".+"))), |i: Input| {
             i.token(TIMESTAMP_REPEATER_MARK)
@@ -116,17 +127,19 @@ fn repeater_or_delay(
         }),
     ))
     .parse(input)?;
-    let (input, value) = digit1(input)?;
-    let (input, unit) = alt((tag("h"), tag("d"), tag("w"), tag("m"), tag("y"))).parse(input)?;
+    let (input, [value, unit]) = value_and_unit(input)?;
 
-    Ok((
-        input,
-        (
-            mark,
-            value.token(TIMESTAMP_VALUE),
-            unit.token(TIMESTAMP_UNIT),
-        ),
-    ))
+    let mut children = vec![mark, value, unit];
+
+    if is_repeater {
+        let (input, habit) = opt((slash_token, value_and_unit)).parse(input)?;
+        if let Some((slash, [value, unit])) = habit {
+            children.extend([slash, value, unit]);
+        }
+        return Ok((input, children));
+    }
+
+    Ok((input, children))
 }
 
 fn timestamp_node_base(
@@ -163,8 +176,9 @@ fn timestamp_node_base(
         b.children.extend(end_time);
 
         let mut iter = iterator(input, (space1, repeater_or_delay));
-        for (ws, (mark, value, unit)) in &mut iter {
-            b.children.extend([ws.ws_token(), mark, value, unit]);
+        for (ws, items) in &mut iter {
+            b.push(ws.ws_token());
+            b.children.extend(items);
         }
         let (input, _) = iter.finish()?;
 
@@ -183,8 +197,9 @@ fn timestamp_node_base(
     }
 
     let mut iter = iterator(input, (space1, repeater_or_delay));
-    for (ws, (mark, value, unit)) in &mut iter {
-        b.children.extend([ws.ws_token(), mark, value, unit]);
+    for (ws, items) in &mut iter {
+        b.push(ws.ws_token());
+        b.children.extend(items);
     }
     let (input, _) = iter.finish()?;
 
@@ -212,8 +227,9 @@ fn timestamp_node_base(
             b.children.extend(end_time);
         }
         let mut iter = iterator(input, (space1, repeater_or_delay));
-        for (ws, (mark, value, unit)) in &mut iter {
-            b.children.extend([ws.ws_token(), mark, value, unit]);
+        for (ws, items) in &mut iter {
+            b.push(ws.ws_token());
+            b.children.extend(items);
         }
         let (input, _) = iter.finish()?;
 
@@ -357,5 +373,38 @@ fn parse() {
       TIMESTAMP_MINUTE@25..27 "39"
       R_BRACKET@27..28 "]"
     "###
+    );
+}
+
+#[test]
+fn habit_repeater() {
+    use crate::{ast::Timestamp, tests::to_ast};
+
+    let to_timestamp = to_ast::<Timestamp>(timestamp_active_node);
+
+    let ts = to_timestamp("<2026-10-20 Tue .+2d/4d>");
+    assert_eq!(ts.repeater_value(), Some(2));
+    assert_eq!(ts.repeater_deadline_value(), Some(4));
+    insta::assert_debug_snapshot!(
+        ts.syntax,
+        @r#"
+    TIMESTAMP_ACTIVE@0..24
+      L_ANGLE@0..1 "<"
+      TIMESTAMP_YEAR@1..5 "2026"
+      MINUS@5..6 "-"
+      TIMESTAMP_MONTH@6..8 "10"
+      MINUS@8..9 "-"
+      TIMESTAMP_DAY@9..11 "20"
+      WHITESPACE@11..12 " "
+      TIMESTAMP_DAYNAME@12..15 "Tue"
+      WHITESPACE@15..16 " "
+      TIMESTAMP_REPEATER_MARK@16..18 ".+"
+      TIMESTAMP_VALUE@18..19 "2"
+      TIMESTAMP_UNIT@19..20 "d"
+      SLASH@20..21 "/"
+      TIMESTAMP_VALUE@21..22 "4"
+      TIMESTAMP_UNIT@22..23 "d"
+      R_ANGLE@23..24 ">"
+    "#
     );
 }

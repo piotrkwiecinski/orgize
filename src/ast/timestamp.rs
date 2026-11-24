@@ -126,6 +126,52 @@ impl Timestamp {
         self.nth_repeater(0).map(|i| i.2)
     }
 
+    /// Value of the habit deadline after the first repeater (`4` in `.+2d/4d`)
+    ///
+    /// ```rust
+    /// use orgize::{Org, ast::Timestamp};
+    ///
+    /// let t = Org::parse("<2000-01-01 .+2d/4d>").first_node::<Timestamp>().unwrap();
+    /// assert_eq!(t.repeater_deadline_value(), Some(4));
+    /// let t = Org::parse("<2000-01-01 .+2d>").first_node::<Timestamp>().unwrap();
+    /// assert_eq!(t.repeater_deadline_value(), None);
+    /// ```
+    pub fn repeater_deadline_value(&self) -> Option<u32> {
+        self.repeater_deadline().map(|i| i.0)
+    }
+
+    /// Unit of the habit deadline after the first repeater (`w` in `.+1d/2w`)
+    ///
+    /// ```rust
+    /// use orgize::{Org, ast::{Timestamp, TimeUnit}};
+    ///
+    /// let t = Org::parse("<2000-01-01 .+1d/2w>").first_node::<Timestamp>().unwrap();
+    /// assert_eq!(t.repeater_deadline_unit(), Some(TimeUnit::Week));
+    /// let t = Org::parse("<2000-01-01 .+2d>").first_node::<Timestamp>().unwrap();
+    /// assert_eq!(t.repeater_deadline_unit(), None);
+    /// ```
+    pub fn repeater_deadline_unit(&self) -> Option<TimeUnit> {
+        self.repeater_deadline().map(|i| i.1)
+    }
+
+    fn repeater_deadline(&self) -> Option<(u32, TimeUnit)> {
+        let mut iter = self
+            .syntax
+            .children_with_tokens()
+            .skip_while(|n| n.kind() != SyntaxKind::TIMESTAMP_REPEATER_MARK)
+            .skip(3);
+
+        if iter.next()?.kind() != SyntaxKind::SLASH {
+            return None;
+        }
+        let value = iter
+            .next()
+            .and_then(|n| n.as_token()?.text().parse::<u32>().ok())?;
+        let unit = iter.next().and_then(|n| time_unit(n.as_token()?.text()))?;
+
+        Some((value, unit))
+    }
+
     /// ```rust
     /// use orgize::{Org, ast::{Timestamp, DelayType}};
     ///
@@ -296,5 +342,16 @@ impl Timestamp {
         let end = self.end_to_datetime()?;
         let span = start.until((jiff::Unit::Hour, end)).ok()?;
         jiff::SignedDuration::try_from(span).ok()
+    }
+}
+
+fn time_unit(s: &str) -> Option<TimeUnit> {
+    match s {
+        "h" => Some(TimeUnit::Hour),
+        "d" => Some(TimeUnit::Day),
+        "w" => Some(TimeUnit::Week),
+        "m" => Some(TimeUnit::Month),
+        "y" => Some(TimeUnit::Year),
+        _ => None,
     }
 }
